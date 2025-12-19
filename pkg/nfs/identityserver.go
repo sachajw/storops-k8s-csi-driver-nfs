@@ -17,8 +17,9 @@ limitations under the License.
 package nfs
 
 import (
+	"context"
+
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -26,6 +27,7 @@ import (
 
 type IdentityServer struct {
 	Driver *Driver
+	csi.UnimplementedIdentityServer
 }
 
 func (ids *IdentityServer) GetPluginInfo(_ context.Context, _ *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {

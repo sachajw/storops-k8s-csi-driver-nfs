@@ -17,6 +17,7 @@ limitations under the License.
 package nfs
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -24,7 +25,6 @@ import (
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
@@ -38,6 +38,7 @@ import (
 type NodeServer struct {
 	Driver  *Driver
 	mounter mount.Interface
+	csi.UnimplementedNodeServer
 }
 
 // NodePublishVolume mount the volume
@@ -92,7 +93,7 @@ func (ns *NodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 			if v != "" {
 				var err error
 				if mountPermissions, err = strconv.ParseUint(v, 8, 32); err != nil {
-					return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("invalid mountPermissions %s", v))
+					return nil, status.Errorf(codes.InvalidArgument, "invalid mountPermissions %s", v)
 				}
 			}
 		}
@@ -130,8 +131,11 @@ func (ns *NodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	}
 
 	klog.V(2).Infof("NodePublishVolume: volumeID(%v) source(%s) targetPath(%s) mountflags(%v)", volumeID, source, targetPath, mountOptions)
-	err = ns.mounter.Mount(source, targetPath, "nfs", mountOptions)
-	if err != nil {
+	execFunc := func() error {
+		return ns.mounter.Mount(source, targetPath, "nfs", mountOptions)
+	}
+	timeoutFunc := func() error { return fmt.Errorf("time out") }
+	if err := WaitUntilTimeout(90*time.Second, execFunc, timeoutFunc); err != nil {
 		if os.IsPermission(err) {
 			return nil, status.Error(codes.PermissionDenied, err.Error())
 		}
@@ -213,12 +217,12 @@ func (ns *NodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolu
 	// check if the volume stats is cached
 	cache, err := ns.Driver.volStatsCache.Get(req.VolumeId, azcache.CacheReadTypeDefault)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	if cache != nil {
-		resp := cache.(csi.NodeGetVolumeStatsResponse)
+		resp := cache.(*csi.NodeGetVolumeStatsResponse)
 		klog.V(6).Infof("NodeGetVolumeStats: volume stats for volume %s path %s is cached", req.VolumeId, req.VolumePath)
-		return &resp, nil
+		return resp, nil
 	}
 
 	if _, err := os.Lstat(req.VolumePath); err != nil {
@@ -277,7 +281,7 @@ func (ns *NodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolu
 	}
 
 	// cache the volume stats per volume
-	ns.Driver.volStatsCache.Set(req.VolumeId, resp)
+	ns.Driver.volStatsCache.Set(req.VolumeId, &resp)
 	return &resp, err
 }
 

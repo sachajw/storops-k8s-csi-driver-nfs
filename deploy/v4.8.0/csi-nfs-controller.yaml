@@ -35,13 +35,14 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.2
           args:
             - "-v=2"
             - "--csi-address=$(ADDRESS)"
             - "--leader-election"
             - "--leader-election-namespace=kube-system"
             - "--extra-create-metadata=true"
+            - "--feature-gates=HonorPVReclaimPolicy=true"
             - "--timeout=1200s"
           env:
             - name: ADDRESS

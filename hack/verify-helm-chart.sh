@@ -22,7 +22,13 @@ function get_image_from_helm_chart() {
   local -r image_name="${1}"
   image_repository="$(cat ${PKG_ROOT}/charts/latest/csi-driver-nfs/values.yaml | yq -r .image.${image_name}.repository)"
   image_tag="$(cat ${PKG_ROOT}/charts/latest/csi-driver-nfs/values.yaml | yq -r .image.${image_name}.tag)"
-  echo "${image_repository}:${image_tag}"
+  # If repository starts with /, prepend baseRepo
+  if [[ "${image_repository}" == /* ]]; then
+    base_repo="$(cat ${PKG_ROOT}/charts/latest/csi-driver-nfs/values.yaml | yq -r .image.baseRepo)"
+    echo "${base_repo}${image_repository}:${image_tag}"
+  else
+    echo "${image_repository}:${image_tag}"
+  fi
 }
 
 function validate_image() {
@@ -62,9 +68,10 @@ pip install yq --ignore-installed PyYAML
 
 # Extract images from csi-nfs-controller.yaml
 expected_csi_provisioner_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[0].image | head -n 1)"
-expected_csi_snapshotter_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[1].image | head -n 1)"
-expected_liveness_probe_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[2].image | head -n 1)"
-expected_nfs_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[3].image | head -n 1)"
+expected_csi_resizer_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[1].image | head -n 1)"
+expected_csi_snapshotter_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[2].image | head -n 1)"
+expected_liveness_probe_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[3].image | head -n 1)"
+expected_nfs_image="$(cat ${PKG_ROOT}/deploy/csi-nfs-controller.yaml | yq -r .spec.template.spec.containers[4].image | head -n 1)"
 
 csi_provisioner_image="$(get_image_from_helm_chart "csiProvisioner")"
 validate_image "${expected_csi_provisioner_image}" "${csi_provisioner_image}"

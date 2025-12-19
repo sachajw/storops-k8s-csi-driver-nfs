@@ -37,16 +37,20 @@ type DriverOptions struct {
 	WorkingMountDir              string
 	DefaultOnDeletePolicy        string
 	VolStatsCacheExpireInMinutes int
+	RemoveArchivedVolumePath     bool
+	UseTarCommandInSnapshot      bool
 }
 
 type Driver struct {
-	name                  string
-	nodeID                string
-	version               string
-	endpoint              string
-	mountPermissions      uint64
-	workingMountDir       string
-	defaultOnDeletePolicy string
+	name                     string
+	nodeID                   string
+	version                  string
+	endpoint                 string
+	mountPermissions         uint64
+	workingMountDir          string
+	defaultOnDeletePolicy    string
+	removeArchivedVolumePath bool
+	useTarCommandInSnapshot  bool
 
 	//ids *identityServer
 	ns          *NodeServer
@@ -57,6 +61,8 @@ type Driver struct {
 	// a timed cache storing volume stats <volumeID, volumeStats>
 	volStatsCache                azcache.Resource
 	volStatsCacheExpireInMinutes int
+	// a timed cache storing volume deletion records <volumeID, "">
+	volDeletionCache azcache.Resource
 }
 
 const (
@@ -91,6 +97,9 @@ func NewDriver(options *DriverOptions) *Driver {
 		mountPermissions:             options.MountPermissions,
 		workingMountDir:              options.WorkingMountDir,
 		volStatsCacheExpireInMinutes: options.VolStatsCacheExpireInMinutes,
+		removeArchivedVolumePath:     options.RemoveArchivedVolumePath,
+		useTarCommandInSnapshot:      options.UseTarCommandInSnapshot,
+		defaultOnDeletePolicy:        options.DefaultOnDeletePolicy,
 	}
 
 	n.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
@@ -98,6 +107,7 @@ func NewDriver(options *DriverOptions) *Driver {
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
+		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 	})
 
 	n.AddNodeServiceCapabilities([]csi.NodeServiceCapability_RPC_Type{
@@ -112,8 +122,11 @@ func NewDriver(options *DriverOptions) *Driver {
 	}
 
 	var err error
-	getter := func(key string) (interface{}, error) { return nil, nil }
+	getter := func(_ string) (interface{}, error) { return nil, nil }
 	if n.volStatsCache, err = azcache.NewTimedCache(time.Duration(options.VolStatsCacheExpireInMinutes)*time.Minute, getter, false); err != nil {
+		klog.Fatalf("%v", err)
+	}
+	if n.volDeletionCache, err = azcache.NewTimedCache(time.Minute, getter, false); err != nil {
 		klog.Fatalf("%v", err)
 	}
 	return n

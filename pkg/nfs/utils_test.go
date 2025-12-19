@@ -22,6 +22,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/container-storage-interface/spec/lib/go/csi"
+	"go.uber.org/goleak"
 )
 
 var (
@@ -64,7 +68,6 @@ func TestParseEndpoint(t *testing.T) {
 	}
 
 	for _, test := range cases {
-		test := test //pin
 		t.Run(test.desc, func(t *testing.T) {
 			proto, addr, err := ParseEndpoint(test.endpoint)
 
@@ -355,5 +358,199 @@ func TestValidateOnDeleteValue(t *testing.T) {
 		if !reflect.DeepEqual(result, test.expected) {
 			t.Errorf("test[%s]: unexpected output: %v, expected result: %v", test.desc, result, test.expected)
 		}
+	}
+}
+
+func TestWaitForPathNotExistWithTimeout(t *testing.T) {
+	tests := []struct {
+		desc     string
+		path     string
+		timeout  int
+		expected error
+	}{
+		{
+			desc:     "path does not exist",
+			path:     "non-existent-path",
+			timeout:  1,
+			expected: nil,
+		},
+		{
+			desc:     "path exists",
+			path:     "/",
+			timeout:  2,
+			expected: fmt.Errorf("time out waiting for path / not exist"),
+		},
+	}
+
+	for _, test := range tests {
+		err := waitForPathNotExistWithTimeout(test.path, time.Duration(test.timeout))
+		if !reflect.DeepEqual(err, test.expected) {
+			t.Errorf("test[%s]: unexpected output: %v, expected result: %v", test.desc, err, test.expected)
+		}
+	}
+}
+
+func TestRemoveEmptyDirs(t *testing.T) {
+	parentDir, _ := os.Getwd()
+	emptyDirOneLevel, _ := getWorkDirPath("emptyDir1")
+	emptyDirTwoLevels, _ := getWorkDirPath("emptyDir2/emptyDir2")
+	emptyDirThreeLevels, _ := getWorkDirPath("emptyDir3/emptyDir2/emptyDir3")
+
+	tests := []struct {
+		desc      string
+		parentDir string
+		dir       string
+		expected  error
+	}{
+		{
+			desc:      "empty path",
+			parentDir: parentDir,
+			expected:  nil,
+		},
+		{
+			desc:      "empty dir with one level",
+			parentDir: parentDir,
+			dir:       emptyDirOneLevel,
+			expected:  nil,
+		},
+		{
+			desc:      "dir is not a subdirectory of parentDir",
+			parentDir: "/dir1",
+			dir:       "/dir2",
+			expected:  fmt.Errorf("dir /dir2 is not a subdirectory of parentDir /dir1"),
+		},
+		{
+			desc:      "empty dir with two levels",
+			parentDir: parentDir,
+			dir:       emptyDirTwoLevels,
+			expected:  nil,
+		},
+		{
+			desc:      "empty dir with three levels",
+			parentDir: parentDir,
+			dir:       emptyDirThreeLevels,
+			expected:  nil,
+		},
+	}
+
+	for _, test := range tests {
+		if strings.Contains(test.dir, "emptyDir") {
+			_ = makeDir(test.dir)
+			defer os.RemoveAll(test.dir)
+		}
+		err := removeEmptyDirs(test.parentDir, test.dir)
+		if !reflect.DeepEqual(err, test.expected) {
+			t.Errorf("test[%s]: unexpected output: %v, expected result: %v", test.desc, err, test.expected)
+		}
+		if strings.Contains(test.dir, "emptyDir") {
+			// directory should be removed
+			if _, err := os.Stat(emptyDirOneLevel); !os.IsNotExist(err) {
+				t.Errorf("test[%s]: directory %s should be removed", test.desc, emptyDirOneLevel)
+			}
+		}
+	}
+}
+
+func TestWaitUntilTimeout(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	tests := []struct {
+		desc        string
+		timeout     time.Duration
+		execFunc    ExecFunc
+		timeoutFunc TimeoutFunc
+		expectedErr error
+	}{
+		{
+			desc:    "execFunc returns error",
+			timeout: 1 * time.Second,
+			execFunc: func() error {
+				return fmt.Errorf("execFunc error")
+			},
+			timeoutFunc: func() error {
+				return fmt.Errorf("timeout error")
+			},
+			expectedErr: fmt.Errorf("execFunc error"),
+		},
+		{
+			desc:    "execFunc timeout",
+			timeout: 1 * time.Second,
+			execFunc: func() error {
+				time.Sleep(2 * time.Second)
+				return nil
+			},
+			timeoutFunc: func() error {
+				return fmt.Errorf("timeout error")
+			},
+			expectedErr: fmt.Errorf("timeout error"),
+		},
+		{
+			desc:    "execFunc completed successfully",
+			timeout: 1 * time.Second,
+			execFunc: func() error {
+				return nil
+			},
+			timeoutFunc: func() error {
+				return fmt.Errorf("timeout error")
+			},
+			expectedErr: nil,
+		},
+	}
+
+	for _, test := range tests {
+		err := WaitUntilTimeout(test.timeout, test.execFunc, test.timeoutFunc)
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			if err.Error() != test.expectedErr.Error() {
+				t.Errorf("unexpected error: %v, expected error: %v", err, test.expectedErr)
+			}
+		}
+	}
+}
+func TestGetVolumeCapabilityFromSecret(t *testing.T) {
+	tests := []struct {
+		desc     string
+		volumeID string
+		secret   map[string]string
+		expected *csi.VolumeCapability
+	}{
+		{
+			desc:     "secret contains mountOptions",
+			volumeID: "vol-123",
+			secret:   map[string]string{"mountOptions": "nfsvers=3"},
+			expected: &csi.VolumeCapability{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{
+						MountFlags: []string{"nfsvers=3"},
+					},
+				},
+			},
+		},
+		{
+			desc:     "secret does not contain mountOptions",
+			volumeID: "vol-456",
+			secret:   map[string]string{"otherKey": "otherValue"},
+			expected: nil,
+		},
+		{
+			desc:     "empty secret",
+			volumeID: "vol-789",
+			secret:   map[string]string{},
+			expected: nil,
+		},
+		{
+			desc:     "nil secret",
+			volumeID: "vol-000",
+			secret:   nil,
+			expected: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			result := getVolumeCapabilityFromSecret(test.volumeID, test.secret)
+			if !reflect.DeepEqual(result, test.expected) {
+				t.Errorf("test[%s]: unexpected result: %v, expected: %v", test.desc, result, test.expected)
+			}
+		})
 	}
 }

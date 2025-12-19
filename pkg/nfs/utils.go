@@ -17,14 +17,16 @@ limitations under the License.
 package nfs
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -65,21 +67,21 @@ func NewControllerServer(d *Driver) *ControllerServer {
 	}
 }
 
-func NewControllerServiceCapability(cap csi.ControllerServiceCapability_RPC_Type) *csi.ControllerServiceCapability {
+func NewControllerServiceCapability(c csi.ControllerServiceCapability_RPC_Type) *csi.ControllerServiceCapability {
 	return &csi.ControllerServiceCapability{
 		Type: &csi.ControllerServiceCapability_Rpc{
 			Rpc: &csi.ControllerServiceCapability_RPC{
-				Type: cap,
+				Type: c,
 			},
 		},
 	}
 }
 
-func NewNodeServiceCapability(cap csi.NodeServiceCapability_RPC_Type) *csi.NodeServiceCapability {
+func NewNodeServiceCapability(c csi.NodeServiceCapability_RPC_Type) *csi.NodeServiceCapability {
 	return &csi.NodeServiceCapability{
 		Type: &csi.NodeServiceCapability_Rpc{
 			Rpc: &csi.NodeServiceCapability_RPC{
-				Type: cap,
+				Type: c,
 			},
 		},
 	}
@@ -195,4 +197,113 @@ func setKeyValueInMap(m map[string]string, key, value string) {
 		}
 	}
 	m[key] = value
+}
+
+func waitForPathNotExistWithTimeout(path string, timeout time.Duration) error {
+	// Loop until the path no longer exists or the timeout is reached
+	timeoutTime := time.Now().Add(time.Duration(timeout) * time.Second)
+	for {
+		if _, err := os.Lstat(path); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+
+		if time.Now().After(timeoutTime) {
+			return fmt.Errorf("time out waiting for path %s not exist", path)
+		}
+		time.Sleep(500 * time.Microsecond)
+	}
+}
+
+// removeEmptyDirs removes empty directories in the given directory dir until the parent directory parentDir
+// It will remove all empty directories in the path from the given directory to the parent directory
+// It will not remove the parent directory parentDir
+func removeEmptyDirs(parentDir, dir string) error {
+	if parentDir == "" || dir == "" {
+		return nil
+	}
+
+	absParentDir, err := filepath.Abs(parentDir)
+	if err != nil {
+		return err
+	}
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+
+	if !strings.HasPrefix(absDir, absParentDir) {
+		return fmt.Errorf("dir %s is not a subdirectory of parentDir %s", dir, parentDir)
+	}
+
+	var depth int
+	for absDir != absParentDir {
+		entries, err := os.ReadDir(absDir)
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			klog.V(2).Infof("Removing empty directory %s", absDir)
+			if err := os.Remove(absDir); err != nil {
+				return err
+			}
+		} else {
+			klog.V(2).Infof("Directory %s is not empty", absDir)
+			break
+		}
+		if depth++; depth > 10 {
+			return fmt.Errorf("depth of directory %s is too deep", dir)
+		}
+		absDir = filepath.Dir(absDir)
+	}
+
+	return nil
+}
+
+// ExecFunc returns a exec function's output and error
+type ExecFunc func() (err error)
+
+// TimeoutFunc returns output and error if an ExecFunc timeout
+type TimeoutFunc func() (err error)
+
+// WaitUntilTimeout waits for the exec function to complete or return timeout error
+func WaitUntilTimeout(timeout time.Duration, execFunc ExecFunc, timeoutFunc TimeoutFunc) error {
+	// Create a channel to receive the result of the exec function
+	done := make(chan bool, 1)
+	var err error
+
+	// Start the exec function in a goroutine
+	go func() {
+		err = execFunc()
+		done <- true
+	}()
+
+	// Wait for the function to complete or time out
+	select {
+	case <-done:
+		return err
+	case <-time.After(timeout):
+		return timeoutFunc()
+	}
+}
+
+// getVolumeCapabilityFromSecret retrieves the volume capability from the secret
+// if secret contains mountOptions, it will return the volume capability
+// if secret does not contain mountOptions, it will return nil
+func getVolumeCapabilityFromSecret(volumeID string, secret map[string]string) *csi.VolumeCapability {
+	mountOptions := getMountOptions(secret)
+	if mountOptions != "" {
+		klog.V(2).Infof("found mountOptions(%s) for volume(%s)", mountOptions, volumeID)
+		return &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{
+					MountFlags: []string{mountOptions},
+				},
+			},
+		}
+	}
+	return nil
 }

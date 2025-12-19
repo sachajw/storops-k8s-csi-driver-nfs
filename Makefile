@@ -27,7 +27,7 @@ include release-tools/build.make
 
 GIT_COMMIT = $(shell git rev-parse HEAD)
 BUILD_DATE = $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-IMAGE_VERSION ?= v4.8.0
+IMAGE_VERSION ?= v4.13.0
 LDFLAGS = -X ${PKG}/pkg/nfs.driverVersion=${IMAGE_VERSION} -X ${PKG}/pkg/nfs.gitCommit=${GIT_COMMIT} -X ${PKG}/pkg/nfs.buildDate=${BUILD_DATE}
 EXT_LDFLAGS = -s -w -extldflags "-static"
 # Use a custom version for E2E tests if we are testing in CI
@@ -42,7 +42,7 @@ REGISTRY_NAME ?= $(shell echo $(REGISTRY) | sed "s/.azurecr.io//g")
 IMAGE_TAG = $(REGISTRY)/$(IMAGENAME):$(IMAGE_VERSION)
 IMAGE_TAG_LATEST = $(REGISTRY)/$(IMAGENAME):latest
 
-E2E_HELM_OPTIONS ?= --set image.nfs.repository=$(REGISTRY)/$(IMAGENAME) --set image.nfs.tag=$(IMAGE_VERSION) --set image.nfs.pullPolicy=Always --set feature.enableInlineVolume=true --set externalSnapshotter.enabled=true
+E2E_HELM_OPTIONS ?= --set image.nfs.repository=$(REGISTRY)/$(IMAGENAME) --set image.nfs.tag=$(IMAGE_VERSION) --set image.nfs.pullPolicy=Always --set feature.enableInlineVolume=true --set externalSnapshotter.enabled=true --set controller.runOnControlPlane=true
 E2E_HELM_OPTIONS += ${EXTRA_HELM_OPTIONS}
 
 # Output type of docker buildx build
@@ -131,8 +131,8 @@ endif
 .PHONY: install-nfs-server
 install-nfs-server:
 	kubectl apply -f ./deploy/example/nfs-provisioner/nfs-server.yaml
-	kubectl delete secret mount-options --ignore-not-found
-	kubectl create secret generic mount-options --from-literal mountOptions="nfsvers=4.1"
+	kubectl delete secret mount-options -n default --ignore-not-found
+	kubectl create secret generic mount-options --from-literal mountOptions="nfsvers=4.1" -n default
 
 .PHONY: install-helm
 install-helm:
